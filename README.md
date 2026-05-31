@@ -1,4 +1,4 @@
-# 📊 End-to-End Data Analytics Pipeline
+# 📊 End-to-End Data Analytics Pipeline [🔗](https://e2e-sales-analytics-pipeline-dashboard.streamlit.app/)
 
 A complete, automated data analytics pipeline built with **Python** and **MySQL**, featuring a premium **Streamlit** dashboard for interactive analysis.
 
