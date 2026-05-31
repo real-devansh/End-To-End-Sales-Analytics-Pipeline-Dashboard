@@ -1,0 +1,4 @@
+segment,unique_customers,total_orders,total_revenue,avg_order_value,revenue_per_customer
+Consumer,409,5101,1148060.53,225.07,2806.99
+Corporate,236,2953,688494.07,233.15,2917.35
+Home Office,148,1746,424982.18,243.4,2871.5

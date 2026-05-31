@@ -1,0 +1,5 @@
+sales_tier,order_count,total_revenue,avg_order_value,min_sale,max_sale
+Low,2451,22835.07,9.32,0.44,17.25
+Medium,2449,78578.55,32.09,17.28,54.48
+High,2450,276320.33,112.78,54.5,210.58
+Premium,2450,1883802.84,768.9,210.68,22638.48

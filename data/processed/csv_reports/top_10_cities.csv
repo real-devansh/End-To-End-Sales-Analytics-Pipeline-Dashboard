@@ -1,0 +1,11 @@
+city,state,region,total_orders,total_revenue,avg_order_value
+New York City,New York,East,891,252462.55,283.35
+Los Angeles,California,West,728,173420.18,238.21
+Seattle,Washington,West,426,116106.32,272.55
+San Francisco,California,West,500,109041.12,218.08
+Philadelphia,Pennsylvania,East,532,108841.75,204.59
+Houston,Texas,Central,374,63956.14,171.01
+Chicago,Illinois,Central,308,47820.13,155.26
+San Diego,California,West,170,47521.03,279.54
+Detroit,Michigan,Central,115,42446.94,369.1
+Jacksonville,Florida,South,75,39133.33,521.78

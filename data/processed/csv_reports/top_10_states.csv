@@ -1,0 +1,11 @@
+state,region,total_orders,total_revenue,avg_order_value
+California,West,1946,446306.46,229.35
+New York,East,1097,306361.15,279.27
+Texas,Central,973,168572.53,173.25
+Washington,West,504,135206.85,268.27
+Pennsylvania,East,582,116276.65,199.79
+Florida,South,373,88436.53,237.1
+Illinois,Central,483,79236.52,164.05
+Michigan,Central,253,76136.07,300.93
+Ohio,East,454,75130.35,165.49
+Virginia,South,224,70636.72,315.34

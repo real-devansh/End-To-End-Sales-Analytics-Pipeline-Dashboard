@@ -1,0 +1,11 @@
+customer_id,customer_name,segment,total_orders,total_revenue,avg_order_value
+SM-20320,Sean Miller,Home Office,15,25043.05,1669.54
+TC-20980,Tamara Chand,Corporate,12,19052.22,1587.68
+RB-19360,Raymond Buch,Consumer,18,15117.34,839.85
+TA-21385,Tom Ashbrook,Home Office,10,14595.62,1459.56
+AB-10105,Adrian Barton,Consumer,20,14473.57,723.68
+KL-16645,Ken Lonsdale,Consumer,29,14175.23,488.8
+SC-20095,Sanjit Chand,Consumer,22,14142.33,642.83
+HL-15040,Hunter Lopez,Consumer,11,12873.3,1170.3
+SE-20110,Sanjit Engle,Consumer,19,12209.44,642.6
+CC-12370,Christopher Conant,Consumer,11,12129.07,1102.64

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Environment & Secrets
+.env
+.streamlit/secrets.toml
+
+# Logs
+*.log
+pipeline.log
+
+# Dev/Debug tools
+check_db.py
+
+# Data (raw data should not be in repo if large; processed is needed for Streamlit Cloud)
+# Uncomment the next line if you want to exclude raw data:
+# data/raw/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

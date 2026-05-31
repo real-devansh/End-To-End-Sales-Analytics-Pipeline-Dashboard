@@ -1,0 +1,5 @@
+region,states_covered,cities_covered,total_orders,total_revenue,avg_order_value
+West,11,168,3140,710219.68,226.18
+East,14,107,2785,669518.73,240.4
+Central,13,181,2277,492646.91,216.36
+South,11,124,1598,389151.46,243.52
