@@ -35,83 +35,64 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Bright Monochrome Sharp Theme CSS ───────────────────────────────────────
-with open(os.path.join(os.path.dirname(__file__), "style.css")) as f:
+# ── Deep Space Dark Theme CSS ───────────────────────────────────────────────
+with open(os.path.join(os.path.dirname(__file__), "style.css"), encoding="utf-8") as f:
     st.markdown(f"<style>\n{f.read()}\n</style>", unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  DATA LOADING
+#  CONSTANTS
 # ═══════════════════════════════════════════════════════════════════════════
 
-@st.cache_data(ttl=300)
-def load_data():
-    """Load processed data from CSV."""
-    processed_path = os.path.join(os.path.dirname(__file__), "data", "processed", "processed_data.csv")
-    raw_path = os.path.join(os.path.dirname(__file__), "data", "raw", "train.csv")
+_RAW_PATH = os.path.join(os.path.dirname(__file__), "data", "raw", "train.csv")
+_PROCESSED_PATH = os.path.join(os.path.dirname(__file__), "data", "processed", "processed_data.csv")
 
-    if os.path.exists(processed_path):
-        df = pd.read_csv(processed_path)
-        source = "Processed"
-    elif os.path.exists(raw_path):
-        df = pd.read_csv(raw_path)
-        source = "Raw"
+REQUIRED_COLUMNS = [
+    "Row ID", "Order ID", "Order Date", "Ship Date", "Ship Mode",
+    "Customer ID", "Customer Name", "Segment", "Country", "City", "State",
+    "Postal Code", "Region", "Product ID", "Category", "Sub-Category",
+    "Product Name", "Sales",
+]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  DATA HELPERS (in-memory, no disk writes)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@st.cache_data(ttl=600, show_spinner="⚙️ Loading default dataset…")
+def _load_default_raw() -> pd.DataFrame:
+    """Load and return the immutable base train.csv (cached)."""
+    if os.path.exists(_PROCESSED_PATH):
+        df = pd.read_csv(_PROCESSED_PATH)
+    elif os.path.exists(_RAW_PATH):
+        df = pd.read_csv(_RAW_PATH)
     else:
-        return None, "No data"
-
-    # Ensure datetime columns
+        return None
     for col in ["order_date", "ship_date"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
+    return df
 
-    return df, source
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  SAAS UTILITY HELPERS
-# ═══════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(show_spinner="🔄 Cleaning uploaded file…", max_entries=5)
 def _clean_uploaded_bytes(file_bytes: bytes, filename: str) -> pd.DataFrame:
-    """
-    Parse and clean an uploaded file entirely in memory — no disk I/O.
-    Cached by (file_bytes, filename): re-runs cleaning only when the file
-    content actually changes.
-    """
+    """Parse and clean an uploaded CSV entirely in memory."""
     buf = BytesIO(file_bytes)
-    raw_df = (
-        pd.read_csv(buf)
-        if filename.lower().endswith(".csv")
-        else pd.read_excel(buf)
-    )
+    raw_df = pd.read_csv(buf)
     return clean_and_transform(raw_df)
 
 
 @st.cache_data(show_spinner="📊 Computing analytics…", max_entries=3)
 def _run_analytics(df: pd.DataFrame) -> dict:
-    """
-    Run all 15 analytical queries against the DataFrame.
-    st.cache_data keys on the DataFrame content, so results are
-    invalidated automatically whenever the data changes.
-    """
+    """Run all analytical queries. Cached per unique DataFrame content."""
     return run_all_queries_pandas(df)
 
 
 def create_zip_archive(df: pd.DataFrame, results: dict) -> bytes:
-    """
-    Bundle the cleaned DataFrame and all 15 analytical query results into
-    a single in-memory ZIP archive using Python's built-in zipfile module.
-
-    Returns
-    -------
-    bytes
-        Raw ZIP bytes — pass directly to st.download_button(data=…).
-    """
+    """Bundle cleaned DataFrame and query results into an in-memory ZIP."""
     buf = BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        # Root-level cleaned dataset
         zf.writestr("cleaned_data.csv", df.to_csv(index=False))
-        # Analytical query results in a sub-folder
         for key, result_df in results.items():
             if not result_df.empty:
                 zf.writestr(f"reports/{key}.csv", result_df.to_csv(index=False))
@@ -120,44 +101,11 @@ def create_zip_archive(df: pd.DataFrame, results: dict) -> bytes:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  CHART THEME
-# ═══════════════════════════════════════════════════════════════════════════
-
-CHART_TEMPLATE = "plotly_white"
-COLOR_PALETTE = ["#e94560", "#ff6b6b", "#ffa07a", "#48dbfb", "#0abde3",
-                 "#10ac84", "#1dd1a1", "#feca57", "#ff9ff3", "#54a0ff"]
-
-CHART_LAYOUT = dict(
-    template=CHART_TEMPLATE,
-    paper_bgcolor="#ffffff",
-    plot_bgcolor="#f5f5f5",
-    font=dict(family="Inter", color="#000000"),
-    hoverlabel=dict(bgcolor="#ffffff", bordercolor="#000000", font=dict(color="#000000")),
-    margin=dict(l=40, r=40, t=50, b=40),
-    legend=dict(
-        bgcolor="#ffffff",
-        bordercolor="#000000",
-        font=dict(size=11, color="#000000")
-    )
-)
-
-
-def apply_layout(fig, title=""):
-    """Apply consistent layout to plotly figures."""
-    fig.update_layout(
-        **CHART_LAYOUT,
-        title=dict(text=title, font=dict(size=16, color="#000000"), x=0.02),
-    )
-    fig.update_xaxes(gridcolor="rgba(0,0,0,0.1)", zeroline=False, color="#000000", tickfont=dict(color="#000000"), title_font=dict(color="#000000"))
-    fig.update_yaxes(gridcolor="rgba(0,0,0,0.1)", zeroline=False, color="#000000", tickfont=dict(color="#000000"), title_font=dict(color="#000000"))
-    return fig
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 #  KPI CARD COMPONENT
 # ═══════════════════════════════════════════════════════════════════════════
 
 def kpi_card(label, value, subtitle=""):
+    """Render a styled KPI metric card."""
     st.markdown(f"""
     <div class="kpi-card">
         <div class="kpi-label">{label}</div>
@@ -168,26 +116,228 @@ def kpi_card(label, value, subtitle=""):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  CHART THEME
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Deep Space Dark palette — matches CSS design system
+CHART_TEMPLATE = "plotly_dark"
+COLOR_PALETTE = [
+    "#1ED760",  # accent green
+    "#1fef6a",  # green lighter
+    "#48dbfb",  # cyan
+    "#0abde3",  # blue
+    "#feca57",  # amber
+    "#ff9ff3",  # pink
+    "#54a0ff",  # periwinkle
+    "#ff6b6b",  # coral
+    "#5f27cd",  # violet
+    "#10ac84",  # teal
+]
+
+CHART_LAYOUT = dict(
+    template=CHART_TEMPLATE,
+    paper_bgcolor="#181818",
+    plot_bgcolor="#181818",
+    font=dict(family="Inter, system-ui, sans-serif", color="#B3B3B3", size=12),
+    hoverlabel=dict(
+        bgcolor="#242424",
+        bordercolor="#535353",
+        font=dict(color="#FFFFFF", family="Inter, sans-serif", size=12)
+    ),
+    margin=dict(l=40, r=40, t=52, b=40),
+    legend=dict(
+        bgcolor="rgba(24,24,24,0.8)",
+        bordercolor="#535353",
+        borderwidth=1,
+        font=dict(size=11, color="#B3B3B3")
+    )
+)
+
+
+def apply_layout(fig, title=""):
+    """Apply consistent Deep Space dark layout to plotly figures."""
+    fig.update_layout(
+        **CHART_LAYOUT,
+        title=dict(
+            text=title,
+            font=dict(size=15, color="#FFFFFF", family="Inter, sans-serif"),
+            x=0.02
+        ),
+    )
+    fig.update_xaxes(
+        gridcolor="rgba(83,83,83,0.3)",
+        zeroline=False,
+        color="#B3B3B3",
+        tickfont=dict(color="#B3B3B3"),
+        title_font=dict(color="#B3B3B3"),
+        linecolor="#535353",
+    )
+    fig.update_yaxes(
+        gridcolor="rgba(83,83,83,0.3)",
+        zeroline=False,
+        color="#B3B3B3",
+        tickfont=dict(color="#B3B3B3"),
+        title_font=dict(color="#B3B3B3"),
+        linecolor="#535353",
+    )
+    return fig
+
+
+def _generate_synthetic_100k(base_df: pd.DataFrame) -> pd.DataFrame:
+    """Resample base_df to 100,000 rows with variance — purely in memory."""
+    TARGET = 100_000
+    df_large = base_df.sample(n=TARGET, replace=True).reset_index(drop=True)
+    if "Row ID" in df_large.columns:
+        df_large["Row ID"] = np.arange(1, TARGET + 1)
+    if "Sales" in df_large.columns:
+        noise = np.random.uniform(0.85, 1.15, TARGET)
+        df_large["Sales"] = (df_large["Sales"] * noise).round(2)
+    for col in ["Order Date", "Ship Date"]:
+        if col in df_large.columns:
+            offsets = pd.to_timedelta(np.random.randint(1, 365, TARGET), unit="d")
+            df_large[col] = pd.to_datetime(df_large[col], errors="coerce") + offsets
+            df_large[col] = df_large[col].dt.strftime("%d/%m/%Y")
+    if "Order ID" in df_large.columns:
+        suffix = np.random.randint(1000, 9999, TARGET).astype(str)
+        df_large["Order ID"] = df_large["Order ID"].str[:-4] + suffix
+    return df_large
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  SESSION STATE INITIALISATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+if "active_df" not in st.session_state:
+    _default = _load_default_raw()
+    if _default is None:
+        st.error("❌ No data found. Run the pipeline first: `python src/run_pipeline.py`")
+        st.stop()
+    st.session_state["active_df"]    = _default
+    st.session_state["data_source"]  = "Default Superstore Data"
+    st.session_state["is_generated"] = False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  DATASET MANAGEMENT MODAL
+# ═══════════════════════════════════════════════════════════════════════════
+
+@st.dialog("Dataset Management & Data Ingestion", width="large")
+def _dataset_modal():
+    with st.expander("📋 Required Schema — expand to view", expanded=False):
+        st.markdown(
+            "> **Custom datasets must include all required columns "
+            "to prevent downstream pipeline errors.**"
+        )
+        st.code(", ".join(REQUIRED_COLUMNS), language="text")
+
+    st.markdown("---")
+
+    tab_upload, tab_generate, tab_reset = st.tabs([
+        "⬆️ Upload Custom Dataset",
+        "⚡ Generate 100k Synthetic",
+        "↩️ Reset to Default",
+    ])
+
+    with tab_upload:
+        st.markdown("Upload a `.csv` file. It will be validated against the required schema before loading.")
+        uploaded = st.file_uploader(
+            "Choose a CSV file",
+            type=["csv"],
+            label_visibility="collapsed",
+            key="modal_uploader",
+        )
+        if uploaded is not None:
+            peek = pd.read_csv(BytesIO(uploaded.getvalue()), nrows=5)
+            missing = [c for c in REQUIRED_COLUMNS if c not in peek.columns]
+            if missing:
+                st.error(
+                    "**Schema validation failed.** "
+                    "The following required columns are missing:\n\n"
+                    + "\n".join(f"- `{c}`" for c in missing)
+                )
+                st.stop()
+            else:
+                st.success(
+                    f"✅ Schema validated — all {len(REQUIRED_COLUMNS)} required columns present."
+                )
+                if st.button("Load Dataset", key="modal_load_btn", use_container_width=True):
+                    with st.spinner("Cleaning & loading…"):
+                        cleaned = _clean_uploaded_bytes(uploaded.getvalue(), uploaded.name)
+                    st.session_state["active_df"]    = cleaned
+                    st.session_state["data_source"]  = uploaded.name
+                    st.session_state["is_generated"] = False
+                    st.toast(f"✅ {uploaded.name} loaded — {len(cleaned):,} rows", icon="🗂️")
+                    st.rerun()
+
+    with tab_generate:
+        if st.session_state.get("is_generated", False):
+            st.warning(
+                "⚠️ A generated 100k dataset is currently active. "
+                "Generating a new one will replace the active session data "
+                "(your base dataset remains safe)."
+            )
+        else:
+            st.info(
+                "This will resample the base `train.csv` to **100,000 rows** "
+                "with randomised sales variance and date offsets — all in memory."
+            )
+        if st.button("⚡ Generate & Load 100k Rows", key="modal_gen_btn", use_container_width=True):
+            raw_base = pd.read_csv(_RAW_PATH) if os.path.exists(_RAW_PATH) else None
+            if raw_base is None:
+                st.error("Base dataset not found. Cannot generate synthetic data.")
+                st.stop()
+            with st.spinner("Generating 100,000 rows…"):
+                synth = _generate_synthetic_100k(raw_base)
+                cleaned_synth = clean_and_transform(synth)
+            st.session_state["active_df"]    = cleaned_synth
+            st.session_state["data_source"]  = "Synthetic 100k Resample"
+            st.session_state["is_generated"] = True
+            st.toast("⚡ 100k synthetic dataset loaded into session!", icon="✅")
+            st.rerun()
+
+    with tab_reset:
+        current_source = st.session_state.get("data_source", "—")
+        st.markdown(f"**Currently active:** `{current_source}`")
+        st.markdown(
+            "Reset will restore the original Superstore dataset "
+            "(≈9,800 rows) from `train.csv`."
+        )
+        if st.button("↩️ Reset to Default Dataset", key="modal_reset_btn", use_container_width=True):
+            _default = _load_default_raw()
+            st.session_state["active_df"]    = _default
+            st.session_state["data_source"]  = "Default Superstore Data"
+            st.session_state["is_generated"] = False
+            st.toast("↩️ Restored default Superstore dataset.", icon="✅")
+            st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  SIDEBAR
 # ═══════════════════════════════════════════════════════════════════════════
 
 with st.sidebar:
-    # ── 📤 Upload Data ───────────────────────────────────────────────────
-    st.markdown("### 📤 Upload Data")
-    uploaded_file = st.file_uploader(
-        "Upload a raw CSV or Excel file",
-        type=["csv", "xlsx", "xls"],
-        label_visibility="collapsed",
-        help=(
-            "Upload a raw sales file. It will be automatically passed through "
-            "the full cleaning & transformation pipeline — no disk writes needed."
-        ),
-    )
-    if uploaded_file is not None:
-        st.success(f"✓ {uploaded_file.name} ready")
-    st.markdown("---")
+    if st.button("🗄️ Upload / Manage Dataset", use_container_width=True, key="open_modal_btn"):
+        _dataset_modal()
 
-    # ── Navigation ───────────────────────────────────────────────────
+    _src  = st.session_state.get("data_source", "—")
+    _rows = len(st.session_state["active_df"])
+    _cols = len(st.session_state["active_df"].columns)
+    st.markdown(
+        f'<div style="background:#1e1e1e;border:1px solid #535353;border-radius:0.6rem;'
+        f'padding:12px 14px;margin-top:8px;font-size:0.78rem;line-height:1.9;">'
+        f'<div><span style="color:#B3B3B3">Current Source</span><br>'
+        f'<strong style="color:#FFFFFF">{_src}</strong></div>'
+        f'<div style="margin-top:6px">'
+        f'<span style="color:#B3B3B3">Loaded Records</span><br>'
+        f'<strong style="color:#1ED760;font-family:\'JetBrains Mono\',monospace">{_rows:,}</strong>'
+        f'</div>'
+        f'<div style="margin-top:6px">'
+        f'<span style="color:#B3B3B3">Total Attributes</span><br>'
+        f'<strong style="color:#FFFFFF">{_cols} columns</strong>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("---")
     st.markdown("## Navigation")
     page = st.radio(
         "Select Page",
@@ -197,58 +347,34 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Filters")
 
-# ── Resolve Data Source ─────────────────────────────────────────────────
-if uploaded_file is not None:
-    # _clean_uploaded_bytes is cached: runs only when file content changes
-    try:
-        df = _clean_uploaded_bytes(uploaded_file.getvalue(), uploaded_file.name)
-        data_source = f"📤 Uploaded: {uploaded_file.name}"
-    except Exception as _exc:
-        st.error(f"❌ Could not process uploaded file: {_exc}")
-        st.stop()
-else:
-    df, data_source = load_data()
+# Resolve active DataFrame
+df = st.session_state["active_df"]
+data_source = st.session_state.get("data_source", "Default Superstore Data")
 
-if df is None:
-    st.error("❌ No data found. Please run the pipeline first: `python src/run_pipeline.py`")
-    st.stop()
-
-# ── Sidebar Filters ───────────────────────────────────────────────────
+# Sidebar Filters
 with st.sidebar:
-    # Category filter
     if "category" in df.columns:
         categories = ["All"] + sorted(df["category"].unique().tolist())
         selected_category = st.selectbox("Category", categories)
     else:
         selected_category = "All"
-
-    # Region filter
     if "region" in df.columns:
         regions = ["All"] + sorted(df["region"].unique().tolist())
         selected_region = st.selectbox("Region", regions)
     else:
         selected_region = "All"
-
-    # Segment filter
     if "segment" in df.columns:
         segments = ["All"] + sorted(df["segment"].unique().tolist())
         selected_segment = st.selectbox("Segment", segments)
     else:
         selected_segment = "All"
-
-    # Year filter
     if "order_year" in df.columns:
         years = ["All"] + sorted(df["order_year"].dropna().unique().astype(int).tolist())
         selected_year = st.selectbox("Year", years)
     else:
         selected_year = "All"
 
-    st.markdown("---")
-    st.markdown(f"**Data Source:** {data_source}")
-    st.markdown(f"**Records:** {len(df):,}")
-    st.markdown(f"**Columns:** {df.shape[1]}")
-
-# ── Apply Filters ─────────────────────────────────────────────────────
+# Apply Filters
 filtered_df = df.copy()
 if selected_category != "All" and "category" in filtered_df.columns:
     filtered_df = filtered_df[filtered_df["category"] == selected_category]
@@ -259,11 +385,8 @@ if selected_segment != "All" and "segment" in filtered_df.columns:
 if selected_year != "All" and "order_year" in filtered_df.columns:
     filtered_df = filtered_df[filtered_df["order_year"] == int(selected_year)]
 
-# ── Compute Analytics Results ──────────────────────────────────────────────
-# _run_analytics is @st.cache_data: cached per unique DataFrame content.
-# Used by the Download Centre (ZIP + PDF) in the Pipeline Monitor page.
+# Compute Analytics Results
 results = _run_analytics(df)
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  PAGE 1: OVERVIEW DASHBOARD
@@ -781,7 +904,7 @@ elif page == "Pipeline Monitor":
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
-    dl_col1, dl_col2, dl_col3 = st.columns(3)
+    dl_col1, dl_col2 = st.columns(2)
 
     # ── Column 1: Cleaned CSV ───────────────────────────────────────
     with dl_col1:
@@ -820,32 +943,33 @@ elif page == "Pipeline Monitor":
         )
 
     # ── Column 3: Corporate PDF Report ────────────────────────────
-    with dl_col3:
-        st.markdown("**📋 Corporate PDF Report**")
-        st.caption(
-            "Multi-page A4 PDF with executive summary KPIs, "
-            "category/region snapshots, and granular insight tables."
-        )
-        try:
-            from pdf_generator import generate_pdf_report
-            pdf_bytes = generate_pdf_report(results)
-            st.download_button(
-                label="⬇ Download PDF Report",
-                data=pdf_bytes,
-                file_name=(
-                    f"analytics_report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
-                ),
-                mime="application/pdf",
-                use_container_width=True,
-                key="dl_pdf_report",
-            )
-        except ImportError:
-            st.warning(
-                "⚠ fpdf2 not installed.  "
-                "Run: `pip install fpdf2` to enable PDF export."
-            )
-        except Exception as _pdf_exc:
-            st.error(f"PDF generation failed: {_pdf_exc}")
+    # (Hidden as per request)
+    # with dl_col3:
+    #     st.markdown("**📋 Corporate PDF Report**")
+    #     st.caption(
+    #         "Multi-page A4 PDF with executive summary KPIs, "
+    #         "category/region snapshots, and granular insight tables."
+    #     )
+    #     try:
+    #         from pdf_generator import generate_pdf_report
+    #         pdf_bytes = generate_pdf_report(results)
+    #         st.download_button(
+    #             label="⬇ Download PDF Report",
+    #             data=pdf_bytes,
+    #             file_name=(
+    #                 f"analytics_report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+    #             ),
+    #             mime="application/pdf",
+    #             use_container_width=True,
+    #             key="dl_pdf_report",
+    #         )
+    #     except ImportError:
+    #         st.warning(
+    #             "⚠ fpdf2 not installed.  "
+    #             "Run: `pip install fpdf2` to enable PDF export."
+    #         )
+    #     except Exception as _pdf_exc:
+    #         st.error(f"PDF generation failed: {_pdf_exc}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
