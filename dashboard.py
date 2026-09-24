@@ -10,6 +10,8 @@
 
 import os
 import sys
+import zipfile
+from io import BytesIO
 from datetime import datetime
 import pandas as pd
 import numpy as np
@@ -18,8 +20,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+# ── Pipeline imports ──────────────────────────────────────────────────────
+from src.cleaning import clean_and_transform
+from src.query import run_all_queries_pandas
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG & STYLING
@@ -161,20 +164,28 @@ st.markdown("""
     /* ── Tabs ──────────────────────────────────────────────────────── */
     .stTabs [data-baseweb="tab-list"] {
         gap: 0px;
-        background: #000000;
+        background: transparent;
         padding: 0px;
         border-radius: 0;
     }
     .stTabs [data-baseweb="tab"] {
         border-radius: 0;
-        color: #000000;
+        background: #ffffff;
+        color: #000000 !important;
         font-weight: 600;
         padding: 10px 20px;
         border: 1px solid #cccccc;
     }
-    .stTabs [aria-selected="true"] {
-        background: #000000 !important;
+    .stTabs [data-baseweb="tab"] p,
+    .stTabs [data-baseweb="tab"] span,
+    .stTabs [data-baseweb="tab"] .stMarkdown,
+    .stTabs [data-baseweb="tab"] [data-testid="stMarkdownContainer"] {
         color: #000000 !important;
+    }
+    .stTabs [aria-selected="true"] {
+        background: #f0f0f0 !important;
+        color: #000000 !important;
+        border-bottom: 3px solid #000000 !important;
     }
 
     /* ── DataFrames ────────────────────────────────────────────────── */
@@ -201,14 +212,6 @@ st.markdown("""
         font-weight: 700 !important;
     }
 
-    /* ── Text area and code ────────────────────────────────────── */
-    .stTextArea textarea {
-        background: #ffffff !important;
-        border: 2px solid #000000 !important;
-        border-radius: 0 !important;
-        color: #000000 !important;
-        font-family: 'Fira Code', 'Consolas', monospace !important;
-    }
 
     /* ── Buttons ────────────────────────────────────────────────── */
     .stButton > button {
@@ -277,7 +280,56 @@ def load_data():
     return df, source
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  SAAS UTILITY HELPERS
+# ═══════════════════════════════════════════════════════════════════════════
 
+@st.cache_data(show_spinner="🔄 Cleaning uploaded file…", max_entries=5)
+def _clean_uploaded_bytes(file_bytes: bytes, filename: str) -> pd.DataFrame:
+    """
+    Parse and clean an uploaded file entirely in memory — no disk I/O.
+    Cached by (file_bytes, filename): re-runs cleaning only when the file
+    content actually changes.
+    """
+    buf = BytesIO(file_bytes)
+    raw_df = (
+        pd.read_csv(buf)
+        if filename.lower().endswith(".csv")
+        else pd.read_excel(buf)
+    )
+    return clean_and_transform(raw_df)
+
+
+@st.cache_data(show_spinner="📊 Computing analytics…", max_entries=3)
+def _run_analytics(df: pd.DataFrame) -> dict:
+    """
+    Run all 15 analytical queries against the DataFrame.
+    st.cache_data keys on the DataFrame content, so results are
+    invalidated automatically whenever the data changes.
+    """
+    return run_all_queries_pandas(df)
+
+
+def create_zip_archive(df: pd.DataFrame, results: dict) -> bytes:
+    """
+    Bundle the cleaned DataFrame and all 15 analytical query results into
+    a single in-memory ZIP archive using Python's built-in zipfile module.
+
+    Returns
+    -------
+    bytes
+        Raw ZIP bytes — pass directly to st.download_button(data=…).
+    """
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        # Root-level cleaned dataset
+        zf.writestr("cleaned_data.csv", df.to_csv(index=False))
+        # Analytical query results in a sub-folder
+        for key, result_df in results.items():
+            if not result_df.empty:
+                zf.writestr(f"reports/{key}.csv", result_df.to_csv(index=False))
+    buf.seek(0)
+    return buf.getvalue()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -333,24 +385,48 @@ def kpi_card(label, value, subtitle=""):
 # ═══════════════════════════════════════════════════════════════════════════
 
 with st.sidebar:
+    # ── 📤 Upload Data ───────────────────────────────────────────────────
+    st.markdown("### 📤 Upload Data")
+    uploaded_file = st.file_uploader(
+        "Upload a raw CSV or Excel file",
+        type=["csv", "xlsx", "xls"],
+        label_visibility="collapsed",
+        help=(
+            "Upload a raw sales file. It will be automatically passed through "
+            "the full cleaning & transformation pipeline — no disk writes needed."
+        ),
+    )
+    if uploaded_file is not None:
+        st.success(f"✓ {uploaded_file.name} ready")
+    st.markdown("---")
+
+    # ── Navigation ───────────────────────────────────────────────────
     st.markdown("## Navigation")
     page = st.radio(
         "Select Page",
         ["Overview Dashboard", "Exploratory Analysis", "Pipeline Monitor"],
-        label_visibility="collapsed"
+        label_visibility="collapsed",
     )
-
     st.markdown("---")
     st.markdown("### Filters")
 
-# ── Load Data ──────────────────────────────────────────────────────────────
-df, data_source = load_data()
+# ── Resolve Data Source ─────────────────────────────────────────────────
+if uploaded_file is not None:
+    # _clean_uploaded_bytes is cached: runs only when file content changes
+    try:
+        df = _clean_uploaded_bytes(uploaded_file.getvalue(), uploaded_file.name)
+        data_source = f"📤 Uploaded: {uploaded_file.name}"
+    except Exception as _exc:
+        st.error(f"❌ Could not process uploaded file: {_exc}")
+        st.stop()
+else:
+    df, data_source = load_data()
 
 if df is None:
     st.error("❌ No data found. Please run the pipeline first: `python src/run_pipeline.py`")
     st.stop()
 
-# ── Sidebar Filters ────────────────────────────────────────────────────────
+# ── Sidebar Filters ───────────────────────────────────────────────────
 with st.sidebar:
     # Category filter
     if "category" in df.columns:
@@ -385,7 +461,7 @@ with st.sidebar:
     st.markdown(f"**Records:** {len(df):,}")
     st.markdown(f"**Columns:** {df.shape[1]}")
 
-# ── Apply Filters ──────────────────────────────────────────────────────────
+# ── Apply Filters ─────────────────────────────────────────────────────
 filtered_df = df.copy()
 if selected_category != "All" and "category" in filtered_df.columns:
     filtered_df = filtered_df[filtered_df["category"] == selected_category]
@@ -395,6 +471,11 @@ if selected_segment != "All" and "segment" in filtered_df.columns:
     filtered_df = filtered_df[filtered_df["segment"] == selected_segment]
 if selected_year != "All" and "order_year" in filtered_df.columns:
     filtered_df = filtered_df[filtered_df["order_year"] == int(selected_year)]
+
+# ── Compute Analytics Results ──────────────────────────────────────────────
+# _run_analytics is @st.cache_data: cached per unique DataFrame content.
+# Used by the Download Centre (ZIP + PDF) in the Pipeline Monitor page.
+results = _run_analytics(df)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -895,10 +976,89 @@ elif page == "Pipeline Monitor":
         nulls = df.isnull().sum().sum()
         kpi_card("Null Values", f"{nulls:,}", f"{(nulls/(df.shape[0]*df.shape[1])*100):.2f}% of cells")
 
-    # ── Sample Data ────────────────────────────────────────────────────────
+    # ── Sample Data ─────────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("**Sample Data (First 20 rows):**")
     st.dataframe(df.head(20), use_container_width=True, hide_index=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Download Centre ──────────────────────────────────────────────────
+    st.markdown(
+        '<div class="section-header">📥 Download Centre</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "Export the current dataset and all analytical reports. "
+        "Downloads are based on the **full unfiltered dataset**."
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    dl_col1, dl_col2, dl_col3 = st.columns(3)
+
+    # ── Column 1: Cleaned CSV ───────────────────────────────────────
+    with dl_col1:
+        st.markdown("**🗂 Cleaned Dataset (CSV)**")
+        st.caption(
+            "The fully processed, feature-engineered sales data "
+            "as a single CSV file."
+        )
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="⬇ Download Cleaned CSV",
+            data=csv_bytes,
+            file_name="cleaned_sales_data.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="dl_cleaned_csv",
+        )
+
+    # ── Column 2: Full Analytics ZIP ───────────────────────────────
+    with dl_col2:
+        st.markdown("**📦 Full Analytics ZIP**")
+        st.caption(
+            "Cleaned data + all 15 analytical query results "
+            "bundled into a single ZIP archive, built in memory."
+        )
+        zip_bytes = create_zip_archive(df, results)
+        st.download_button(
+            label="⬇ Download Analytics ZIP",
+            data=zip_bytes,
+            file_name=(
+                f"analytics_export_{datetime.now().strftime('%Y%m%d_%H%M')}.zip"
+            ),
+            mime="application/zip",
+            use_container_width=True,
+            key="dl_analytics_zip",
+        )
+
+    # ── Column 3: Corporate PDF Report ────────────────────────────
+    with dl_col3:
+        st.markdown("**📋 Corporate PDF Report**")
+        st.caption(
+            "Multi-page A4 PDF with executive summary KPIs, "
+            "category/region snapshots, and granular insight tables."
+        )
+        try:
+            from pdf_generator import generate_pdf_report
+            pdf_bytes = generate_pdf_report(results)
+            st.download_button(
+                label="⬇ Download PDF Report",
+                data=pdf_bytes,
+                file_name=(
+                    f"analytics_report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+                ),
+                mime="application/pdf",
+                use_container_width=True,
+                key="dl_pdf_report",
+            )
+        except ImportError:
+            st.warning(
+                "⚠ fpdf2 not installed.  "
+                "Run: `pip install fpdf2` to enable PDF export."
+            )
+        except Exception as _pdf_exc:
+            st.error(f"PDF generation failed: {_pdf_exc}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

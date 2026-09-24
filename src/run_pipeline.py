@@ -48,7 +48,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from ingestion import discover_and_load
 from cleaning import clean_and_transform, save_processed_data
 from database import load_to_mysql, add_indexes, get_engine
-from query import run_all_queries, export_reports, print_report_summary
+from query import run_all_queries, run_all_queries_pandas, export_reports, print_report_summary
 
 
 def run_pipeline():
@@ -162,27 +162,39 @@ def run_pipeline():
     print()
 
     # ══════════════════════════════════════════════════════════════════════
-    #  STAGE 5: SQL ANALYTICS
+    #  STAGE 5: ANALYTICS (SQL when DB available, pandas fallback otherwise)
     # ══════════════════════════════════════════════════════════════════════
     stage_start = time.time()
-    logger.info("▶ STAGE 5/6: RUNNING SQL ANALYTICS")
+    logger.info("▶ STAGE 5/6: RUNNING ANALYTICS")
     results = {}
-    if stages.get("database", {}).get("status", "").startswith("✓"):
+    db_available = stages.get("database", {}).get("status", "").startswith("✓")
+
+    if db_available:
         try:
             engine = get_engine()
             results = run_all_queries(engine)
             engine.dispose()
             stages["analytics"] = {
-                "status": "✓ SUCCESS",
+                "status":  "✓ SUCCESS (SQL)",
                 "queries": len(results),
-                "time": round(time.time() - stage_start, 2),
+                "time":    round(time.time() - stage_start, 2),
             }
         except Exception as e:
-            logger.warning(f"  Analytics failed (non-fatal): {e}")
-            stages["analytics"] = {"status": "⚠ SKIPPED", "time": 0}
+            logger.warning(f"  SQL analytics failed, falling back to pandas: {e}")
+            results = run_all_queries_pandas(df_clean)
+            stages["analytics"] = {
+                "status":  "✓ SUCCESS (pandas fallback)",
+                "queries": len(results),
+                "time":    round(time.time() - stage_start, 2),
+            }
     else:
-        logger.info("  Skipping SQL analytics (MySQL not available)")
-        stages["analytics"] = {"status": "⚠ SKIPPED (no DB)", "time": 0}
+        logger.info("  MySQL unavailable — running analytics in pandas mode")
+        results = run_all_queries_pandas(df_clean)
+        stages["analytics"] = {
+            "status":  "✓ SUCCESS (pandas, no DB)",
+            "queries": len(results),
+            "time":    round(time.time() - stage_start, 2),
+        }
     print()
 
     # ══════════════════════════════════════════════════════════════════════

@@ -8,6 +8,7 @@
 """
 
 import os
+import re
 import logging
 import numpy as np
 import pandas as pd
@@ -68,16 +69,22 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
 
         if pd.api.types.is_numeric_dtype(df[col]):
             median_val = df[col].median()
-            df[col] = df[col].fillna(median_val)
-            strategy = f"median ({median_val:.2f})"
+
+            # ── FIX: Capture the missing mask BEFORE fillna so the
+            # indicator column correctly reflects the original nulls.
             if null_pct >= 5:
                 flag_col = f"{col}_was_missing"
-                df[flag_col] = df[col].isnull().astype(int)
-                strategy += " + indicator flag"
+                df[flag_col] = df[col].isnull().astype(int)  # NaNs still present here
+                strategy = f"median ({median_val:.2f}) + indicator flag"
+            else:
+                strategy = f"median ({median_val:.2f})"
+
+            df[col] = df[col].fillna(median_val)  # NaNs removed AFTER flag is set
+
         elif pd.api.types.is_datetime64_any_dtype(df[col]):
             strategy = "left as NaT"
         else:
-            mode_val = df[col].mode()
+            mode_val = df[col].mode(dropna=True)
             if len(mode_val) > 0:
                 df[col] = df[col].fillna(mode_val[0])
                 strategy = f"mode ('{mode_val[0]}')"
@@ -97,10 +104,46 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _infer_dayfirst(series: pd.Series) -> bool | None:
+    """
+    Heuristic: sample up to 50 non-null string values and inspect the
+    leading numeric component of each date-like token.
+
+    Returns
+    -------
+    True  — leading digit > 12 in at least one sample → must be DD/MM/YYYY
+    False — second digit > 12 in at least one sample → must be MM/DD/YYYY or ISO
+    None  — ambiguous; caller should default to False and log a warning
+    """
+    samples = series.dropna().astype(str).head(50)
+    day_first_evidence = 0
+    month_first_evidence = 0
+
+    for val in samples:
+        match = re.match(r"(\d{1,2})[\-\/\.](\d{1,2})", val)
+        if match:
+            first_num = int(match.group(1))
+            second_num = int(match.group(2))
+            if first_num > 12:
+                # First component can't be a month → must be a day
+                day_first_evidence += 1
+            elif second_num > 12:
+                # Second component can't be a month → first must be a month (US)
+                month_first_evidence += 1
+
+    if day_first_evidence > 0 and month_first_evidence == 0:
+        return True   # Unambiguously DD/MM/YYYY
+    elif month_first_evidence > 0 and day_first_evidence == 0:
+        return False  # Unambiguously MM/DD/YYYY
+    else:
+        return None   # Ambiguous — caller decides
+
+
 def convert_date_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Detect and convert date-like columns to proper datetime format.
-    Handles common date formats including DD/MM/YYYY, MM/DD/YYYY, ISO, etc.
+    Dynamically infers date order (dayfirst) from the data instead of
+    hardcoding it, preventing silent misparsing of US-format dates.
     """
     date_keywords = ["date", "time", "timestamp", "created", "updated", "dt"]
     converted = 0
@@ -110,16 +153,23 @@ def convert_date_columns(df: pd.DataFrame) -> pd.DataFrame:
 
         if is_date_col and df[col].dtype == "object":
             try:
-                df[col] = pd.to_datetime(df[col], dayfirst=True, format="mixed")
+                dayfirst = _infer_dayfirst(df[col])
+
+                if dayfirst is None:
+                    logger.warning(
+                        f"    ⚠ '{col}': Cannot determine date order from sampled data. "
+                        f"Defaulting to dayfirst=False (ISO / US MM/DD/YYYY format). "
+                        f"Set SALES_DAYFIRST=true env var to override globally."
+                    )
+                    dayfirst = os.environ.get("SALES_DAYFIRST", "false").lower() == "true"
+
+                df[col] = pd.to_datetime(df[col], dayfirst=dayfirst, format="mixed")
                 converted += 1
-                logger.info(f"    ├── Converted '{col}' to datetime")
-            except (ValueError, TypeError):
-                try:
-                    df[col] = pd.to_datetime(df[col], format="mixed")
-                    converted += 1
-                    logger.info(f"    ├── Converted '{col}' to datetime (US format)")
-                except (ValueError, TypeError):
-                    logger.warning(f"    ├── Could not parse '{col}' as datetime")
+                fmt_label = "DD/MM/YYYY" if dayfirst else "MM/DD/YYYY or ISO"
+                logger.info(f"    ├── Converted '{col}' to datetime (detected format: {fmt_label})")
+
+            except (ValueError, TypeError) as exc:
+                logger.warning(f"    ├── Could not parse '{col}' as datetime: {exc}")
 
     if converted > 0:
         logger.info(f"  ✓ Converted {converted} column(s) to datetime")

@@ -2,8 +2,15 @@
 =============================================================================
   SQL ANALYTICS & REPORTING MODULE
   --------------------------------
-  Defines and executes key analytical SQL queries against the MySQL database
-  to generate actionable business insights and reports.
+  Single source of truth for all 15 analytical queries.
+
+  Each entry in ANALYTICAL_QUERIES carries:
+    - sql:       Raw SQL (executed against MySQL via run_all_queries)
+    - pandas_fn: Equivalent pandas computation (executed via run_all_queries_pandas)
+
+  This dual-mode design ensures that SQL and pandas paths always produce
+  identical business logic, eliminating the duplicate query definitions that
+  previously lived in generate_reports.py.
 =============================================================================
 """
 
@@ -16,14 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  ANALYTICAL QUERIES — Business Intelligence Suite
+#  ANALYTICAL QUERIES — Single Source of Truth (SQL + pandas)
 # ═══════════════════════════════════════════════════════════════════════════
 
 ANALYTICAL_QUERIES = {
     # ── Revenue & Sales Analysis ───────────────────────────────────────────
     "total_revenue_summary": {
         "title": "Total Revenue Summary",
-        "description": "Overall revenue metrics including total, average, min, and max sales.",
+        "description": "Overall revenue metrics including total, average, min, max, and std dev.",
         "sql": """
             SELECT
                 COUNT(*)                      AS total_orders,
@@ -34,7 +41,16 @@ ANALYTICAL_QUERIES = {
                 ROUND(STDDEV(sales), 2)       AS std_dev_sales
             FROM sales_data
         """,
+        "pandas_fn": lambda df: pd.DataFrame([{
+            "total_orders":    len(df),
+            "total_revenue":   round(df["sales"].sum(), 2),
+            "avg_order_value": round(df["sales"].mean(), 2),
+            "min_sale":        round(df["sales"].min(), 2),
+            "max_sale":        round(df["sales"].max(), 2),
+            "std_dev_sales":   round(df["sales"].std(), 2),
+        }]),
     },
+
     "monthly_revenue_trend": {
         "title": "Monthly Revenue Trend",
         "description": "Revenue trends aggregated by year and month.",
@@ -50,7 +66,21 @@ ANALYTICAL_QUERIES = {
             GROUP BY order_year, order_month, order_month_name
             ORDER BY order_year, order_month
         """,
+        "pandas_fn": lambda df: (
+            df.groupby(["order_year", "order_month", "order_month_name"])
+              .agg(order_count=("sales", "count"),
+                   total_revenue=("sales", "sum"),
+                   avg_order_value=("sales", "mean"))
+              .reset_index()
+              .rename(columns={"order_year": "year", "order_month": "month",
+                               "order_month_name": "month_name"})
+              .assign(total_revenue=lambda x: x["total_revenue"].round(2),
+                      avg_order_value=lambda x: x["avg_order_value"].round(2))
+              .sort_values(["year", "month"])
+              .reset_index(drop=True)
+        ),
     },
+
     "quarterly_revenue": {
         "title": "Quarterly Revenue Performance",
         "description": "Revenue aggregated by year and quarter.",
@@ -65,7 +95,20 @@ ANALYTICAL_QUERIES = {
             GROUP BY order_year, order_quarter
             ORDER BY order_year, order_quarter
         """,
+        "pandas_fn": lambda df: (
+            df.groupby(["order_year", "order_quarter"])
+              .agg(order_count=("sales", "count"),
+                   total_revenue=("sales", "sum"),
+                   avg_order_value=("sales", "mean"))
+              .reset_index()
+              .rename(columns={"order_year": "year", "order_quarter": "quarter"})
+              .assign(total_revenue=lambda x: x["total_revenue"].round(2),
+                      avg_order_value=lambda x: x["avg_order_value"].round(2))
+              .sort_values(["year", "quarter"])
+              .reset_index(drop=True)
+        ),
     },
+
     "yearly_revenue": {
         "title": "Year-over-Year Revenue",
         "description": "Annual revenue with year-over-year growth.",
@@ -79,6 +122,18 @@ ANALYTICAL_QUERIES = {
             GROUP BY order_year
             ORDER BY order_year
         """,
+        "pandas_fn": lambda df: (
+            df.groupby("order_year")
+              .agg(total_orders=("sales", "count"),
+                   total_revenue=("sales", "sum"),
+                   avg_order_value=("sales", "mean"))
+              .reset_index()
+              .rename(columns={"order_year": "year"})
+              .assign(total_revenue=lambda x: x["total_revenue"].round(2),
+                      avg_order_value=lambda x: x["avg_order_value"].round(2))
+              .sort_values("year")
+              .reset_index(drop=True)
+        ),
     },
 
     # ── Category & Product Analysis ────────────────────────────────────────
@@ -98,7 +153,24 @@ ANALYTICAL_QUERIES = {
             GROUP BY category
             ORDER BY total_revenue DESC
         """,
+        "pandas_fn": lambda df: (
+            df.groupby("category")
+              .agg(order_count=("sales", "count"),
+                   total_revenue=("sales", "sum"),
+                   avg_order_value=("sales", "mean"))
+              .reset_index()
+              .assign(
+                  total_revenue=lambda x: x["total_revenue"].round(2),
+                  avg_order_value=lambda x: x["avg_order_value"].round(2),
+                  revenue_share_pct=lambda x: (
+                      x["total_revenue"] / x["total_revenue"].sum() * 100
+                  ).round(2),
+              )
+              .sort_values("total_revenue", ascending=False)
+              .reset_index(drop=True)
+        ),
     },
+
     "subcategory_performance": {
         "title": "Sub-Category Performance (Top 15)",
         "description": "Top 15 sub-categories by revenue.",
@@ -114,7 +186,20 @@ ANALYTICAL_QUERIES = {
             ORDER BY total_revenue DESC
             LIMIT 15
         """,
+        "pandas_fn": lambda df: (
+            df.groupby(["category", "sub_category"])
+              .agg(order_count=("sales", "count"),
+                   total_revenue=("sales", "sum"),
+                   avg_order_value=("sales", "mean"))
+              .reset_index()
+              .assign(total_revenue=lambda x: x["total_revenue"].round(2),
+                      avg_order_value=lambda x: x["avg_order_value"].round(2))
+              .sort_values("total_revenue", ascending=False)
+              .head(15)
+              .reset_index(drop=True)
+        ),
     },
+
     "top_10_products": {
         "title": "Top 10 Products by Revenue",
         "description": "Highest revenue-generating individual products.",
@@ -130,6 +215,16 @@ ANALYTICAL_QUERIES = {
             ORDER BY total_revenue DESC
             LIMIT 10
         """,
+        "pandas_fn": lambda df: (
+            df.groupby(["product_name", "category", "sub_category"])
+              .agg(times_ordered=("sales", "count"),
+                   total_revenue=("sales", "sum"))
+              .reset_index()
+              .assign(total_revenue=lambda x: x["total_revenue"].round(2))
+              .sort_values("total_revenue", ascending=False)
+              .head(10)
+              .reset_index(drop=True)
+        ),
     },
 
     # ── Customer & Segment Analysis ────────────────────────────────────────
@@ -149,7 +244,27 @@ ANALYTICAL_QUERIES = {
             GROUP BY segment
             ORDER BY total_revenue DESC
         """,
+        "pandas_fn": lambda df: (
+            df.groupby("segment")
+              .agg(
+                  unique_customers=("customer_id", "nunique"),
+                  total_orders=("sales", "count"),
+                  total_revenue=("sales", "sum"),
+                  avg_order_value=("sales", "mean"),
+              )
+              .reset_index()
+              .assign(
+                  total_revenue=lambda x: x["total_revenue"].round(2),
+                  avg_order_value=lambda x: x["avg_order_value"].round(2),
+                  revenue_per_customer=lambda x: (
+                      x["total_revenue"] / x["unique_customers"]
+                  ).round(2),
+              )
+              .sort_values("total_revenue", ascending=False)
+              .reset_index(drop=True)
+        ),
     },
+
     "top_10_customers": {
         "title": "Top 10 Customers by Revenue",
         "description": "Highest-spending customers.",
@@ -166,6 +281,18 @@ ANALYTICAL_QUERIES = {
             ORDER BY total_revenue DESC
             LIMIT 10
         """,
+        "pandas_fn": lambda df: (
+            df.groupby(["customer_id", "customer_name", "segment"])
+              .agg(total_orders=("sales", "count"),
+                   total_revenue=("sales", "sum"),
+                   avg_order_value=("sales", "mean"))
+              .reset_index()
+              .assign(total_revenue=lambda x: x["total_revenue"].round(2),
+                      avg_order_value=lambda x: x["avg_order_value"].round(2))
+              .sort_values("total_revenue", ascending=False)
+              .head(10)
+              .reset_index(drop=True)
+        ),
     },
 
     # ── Geographic Analysis ────────────────────────────────────────────────
@@ -184,7 +311,23 @@ ANALYTICAL_QUERIES = {
             GROUP BY region
             ORDER BY total_revenue DESC
         """,
+        "pandas_fn": lambda df: (
+            df.groupby("region")
+              .agg(
+                  states_covered=("state", "nunique"),
+                  cities_covered=("city", "nunique"),
+                  total_orders=("sales", "count"),
+                  total_revenue=("sales", "sum"),
+                  avg_order_value=("sales", "mean"),
+              )
+              .reset_index()
+              .assign(total_revenue=lambda x: x["total_revenue"].round(2),
+                      avg_order_value=lambda x: x["avg_order_value"].round(2))
+              .sort_values("total_revenue", ascending=False)
+              .reset_index(drop=True)
+        ),
     },
+
     "top_10_states": {
         "title": "Top 10 States by Revenue",
         "description": "Highest-revenue states.",
@@ -200,7 +343,20 @@ ANALYTICAL_QUERIES = {
             ORDER BY total_revenue DESC
             LIMIT 10
         """,
+        "pandas_fn": lambda df: (
+            df.groupby(["state", "region"])
+              .agg(total_orders=("sales", "count"),
+                   total_revenue=("sales", "sum"),
+                   avg_order_value=("sales", "mean"))
+              .reset_index()
+              .assign(total_revenue=lambda x: x["total_revenue"].round(2),
+                      avg_order_value=lambda x: x["avg_order_value"].round(2))
+              .sort_values("total_revenue", ascending=False)
+              .head(10)
+              .reset_index(drop=True)
+        ),
     },
+
     "top_10_cities": {
         "title": "Top 10 Cities by Revenue",
         "description": "Highest-revenue cities.",
@@ -217,6 +373,18 @@ ANALYTICAL_QUERIES = {
             ORDER BY total_revenue DESC
             LIMIT 10
         """,
+        "pandas_fn": lambda df: (
+            df.groupby(["city", "state", "region"])
+              .agg(total_orders=("sales", "count"),
+                   total_revenue=("sales", "sum"),
+                   avg_order_value=("sales", "mean"))
+              .reset_index()
+              .assign(total_revenue=lambda x: x["total_revenue"].round(2),
+                      avg_order_value=lambda x: x["avg_order_value"].round(2))
+              .sort_values("total_revenue", ascending=False)
+              .head(10)
+              .reset_index(drop=True)
+        ),
     },
 
     # ── Shipping & Operations Analysis ─────────────────────────────────────
@@ -234,7 +402,21 @@ ANALYTICAL_QUERIES = {
             GROUP BY ship_mode
             ORDER BY total_revenue DESC
         """,
+        "pandas_fn": lambda df: (
+            df.groupby("ship_mode")
+              .agg(total_orders=("sales", "count"),
+                   total_revenue=("sales", "sum"),
+                   avg_order_value=("sales", "mean"),
+                   avg_shipping_days=("shipping_days", "mean"))
+              .reset_index()
+              .assign(total_revenue=lambda x: x["total_revenue"].round(2),
+                      avg_order_value=lambda x: x["avg_order_value"].round(2),
+                      avg_shipping_days=lambda x: x["avg_shipping_days"].round(1))
+              .sort_values("total_revenue", ascending=False)
+              .reset_index(drop=True)
+        ),
     },
+
     "day_of_week_analysis": {
         "title": "Day of Week Sales Pattern",
         "description": "Sales distribution across days of the week.",
@@ -248,6 +430,18 @@ ANALYTICAL_QUERIES = {
             GROUP BY order_day_of_week
             ORDER BY total_revenue DESC
         """,
+        "pandas_fn": lambda df: (
+            df.groupby("order_day_of_week")
+              .agg(total_orders=("sales", "count"),
+                   total_revenue=("sales", "sum"),
+                   avg_order_value=("sales", "mean"))
+              .reset_index()
+              .rename(columns={"order_day_of_week": "day_of_week"})
+              .assign(total_revenue=lambda x: x["total_revenue"].round(2),
+                      avg_order_value=lambda x: x["avg_order_value"].round(2))
+              .sort_values("total_revenue", ascending=False)
+              .reset_index(drop=True)
+        ),
     },
 
     # ── Sales Tier Analysis ────────────────────────────────────────────────
@@ -266,14 +460,33 @@ ANALYTICAL_QUERIES = {
             GROUP BY sales_tier
             ORDER BY avg_order_value
         """,
+        "pandas_fn": lambda df: (
+            df.groupby("sales_tier")
+              .agg(order_count=("sales", "count"),
+                   total_revenue=("sales", "sum"),
+                   avg_order_value=("sales", "mean"),
+                   min_sale=("sales", "min"),
+                   max_sale=("sales", "max"))
+              .reset_index()
+              .assign(total_revenue=lambda x: x["total_revenue"].round(2),
+                      avg_order_value=lambda x: x["avg_order_value"].round(2),
+                      min_sale=lambda x: x["min_sale"].round(2),
+                      max_sale=lambda x: x["max_sale"].round(2))
+              .sort_values("avg_order_value")
+              .reset_index(drop=True)
+        ),
     },
 }
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  RUNNERS
+# ═══════════════════════════════════════════════════════════════════════════
+
 def run_all_queries(engine) -> dict:
     """
-    Execute all analytical queries and return results as a dictionary
-    of DataFrames.
+    Execute all analytical queries against MySQL and return results as a
+    dictionary of DataFrames.
 
     Parameters
     ----------
@@ -311,7 +524,58 @@ def run_all_queries(engine) -> dict:
     return results
 
 
-def export_reports(results: dict, output_dir: str):
+def run_all_queries_pandas(df: pd.DataFrame) -> dict:
+    """
+    Execute all analytical queries against a pandas DataFrame.
+
+    This is the no-database fallback path. It reads from the same
+    ANALYTICAL_QUERIES registry as run_all_queries(), guaranteeing that
+    SQL and pandas paths produce identical business logic.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The cleaned and transformed sales DataFrame.
+
+    Returns
+    -------
+    dict
+        Dictionary mapping query_key -> pd.DataFrame of results.
+    """
+    logger.info("=" * 60)
+    logger.info("  PANDAS ANALYTICS EXECUTION STARTED (no-DB mode)")
+    logger.info("=" * 60)
+
+    results = {}
+    start_time = datetime.now()
+
+    for key, query_def in ANALYTICAL_QUERIES.items():
+        pandas_fn = query_def.get("pandas_fn")
+        if pandas_fn is None:
+            logger.warning(f"  ⚠ No pandas_fn defined for '{key}' — skipping")
+            results[key] = pd.DataFrame()
+            continue
+        try:
+            result_df = pandas_fn(df)
+            results[key] = result_df
+            logger.info(f"  ✓ {query_def['title']:40s} │ {len(result_df):,} rows")
+        except Exception as e:
+            logger.error(f"  ✗ {query_def['title']:40s} │ Error: {e}")
+            results[key] = pd.DataFrame()
+
+    elapsed = (datetime.now() - start_time).total_seconds()
+    logger.info("-" * 60)
+    logger.info(f"  ✓ Executed {len(results)} queries in {elapsed:.2f}s")
+    logger.info("=" * 60)
+
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  EXPORT & REPORTING
+# ═══════════════════════════════════════════════════════════════════════════
+
+def export_reports(results: dict, output_dir: str) -> str:
     """
     Export all query results to an Excel workbook with multiple sheets
     and also individual CSV files.
@@ -319,9 +583,15 @@ def export_reports(results: dict, output_dir: str):
     Parameters
     ----------
     results : dict
-        Dictionary of query results from run_all_queries().
+        Dictionary of query results from run_all_queries() or
+        run_all_queries_pandas().
     output_dir : str
         Directory to save the reports.
+
+    Returns
+    -------
+    str
+        Absolute path to the generated Excel workbook.
     """
     os.makedirs(output_dir, exist_ok=True)
 

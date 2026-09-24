@@ -4,60 +4,89 @@
   -----------------------
   Handles MySQL database connectivity, schema creation, data loading,
   and structured storage using SQLAlchemy + PyMySQL.
+
+  Credentials are loaded exclusively from environment variables (via a
+  .env file). No credentials are ever hardcoded. See .env.example.
 =============================================================================
 """
 
 import os
+import re
 import logging
 import pandas as pd
 from datetime import datetime
 from urllib.parse import quote_plus
+
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.exc import OperationalError
 
+# ── Load .env file if present (does nothing if already set in environment) ─
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
-# ── Default Configuration ──────────────────────────────────────────────────
-DB_CONFIG = {
-    "host":     os.environ.get("MYSQL_HOST", "localhost"),
-    "port":     int(os.environ.get("MYSQL_PORT", "3306")),
-    "user":     os.environ.get("MYSQL_USER", "root"),
-    "password": os.environ.get("MYSQL_PASSWORD", ""),
-    "database": os.environ.get("MYSQL_DATABASE", "analytics_db"),
-}
+
+# ── Configuration — strictly from environment variables ────────────────────
+def _get_db_config() -> dict:
+    """
+    Build the DB config dict from environment variables at call time.
+    This avoids module-level caching so tests can inject env vars freely.
+    """
+    return {
+        "host":     os.getenv("MYSQL_HOST", "localhost"),
+        "port":     int(os.getenv("MYSQL_PORT", "3306")),
+        "user":     os.getenv("MYSQL_USER", "root"),
+        "password": os.getenv("MYSQL_PASSWORD", ""),
+        "database": os.getenv("MYSQL_DATABASE", "analytics_db"),
+    }
+
+
+def _mask_url(url_or_error: str) -> str:
+    """
+    Scrub any embedded password from a connection URL string so it is
+    safe to log. Replaces the password segment with ***.
+
+    e.g.  mysql+pymysql://root:s3cr3t@localhost/db
+       →  mysql+pymysql://root:***@localhost/db
+    """
+    return re.sub(r":[^@:/]+@", ":***@", str(url_or_error))
 
 
 def get_connection_url(include_db: bool = True) -> str:
-    """Build the SQLAlchemy connection URL."""
-    # URL-encode password to safely handle special characters like @, #, !, etc.
-    encoded_password = quote_plus(DB_CONFIG['password'])
+    """Build the SQLAlchemy connection URL from current env config."""
+    cfg = _get_db_config()
+    encoded_password = quote_plus(cfg["password"])
     base = (
-        f"mysql+pymysql://{DB_CONFIG['user']}:{encoded_password}"
-        f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}"
+        f"mysql+pymysql://{cfg['user']}:{encoded_password}"
+        f"@{cfg['host']}:{cfg['port']}"
     )
     if include_db:
-        return f"{base}/{DB_CONFIG['database']}"
+        return f"{base}/{cfg['database']}"
     return base
 
 
-def create_database():
+def create_database() -> bool:
     """Create the analytics database if it does not exist."""
+    cfg = _get_db_config()
     try:
         engine = create_engine(get_connection_url(include_db=False))
         with engine.connect() as conn:
             conn.execute(text(
-                f"CREATE DATABASE IF NOT EXISTS `{DB_CONFIG['database']}` "
+                f"CREATE DATABASE IF NOT EXISTS `{cfg['database']}` "
                 f"CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
             ))
             conn.commit()
         engine.dispose()
-        logger.info(f"  ✓ Database '{DB_CONFIG['database']}' is ready")
+        logger.info(f"  ✓ Database '{cfg['database']}' is ready")
         return True
     except OperationalError as e:
-        logger.error(f"  ✗ Failed to connect to MySQL: {e}")
+        # Mask password before logging to prevent credential leakage
+        logger.error(f"  ✗ Failed to connect to MySQL: {_mask_url(str(e))}")
         logger.error(
-            "    Ensure MySQL is running and credentials are correct.\n"
-            "    Set environment variables: MYSQL_USER, MYSQL_PASSWORD, MYSQL_HOST"
+            "    Ensure MySQL is running and credentials are set correctly.\n"
+            "    Required env vars: MYSQL_USER, MYSQL_PASSWORD, MYSQL_HOST, "
+            "MYSQL_DATABASE (see .env.example)"
         )
         return False
 
@@ -86,12 +115,13 @@ def load_to_mysql(df: pd.DataFrame, table_name: str = "sales_data") -> bool:
     bool
         True if data was loaded successfully, False otherwise.
     """
+    cfg = _get_db_config()
     start_time = datetime.now()
 
     logger.info("=" * 60)
     logger.info("  DATABASE LOADING STARTED")
     logger.info("=" * 60)
-    logger.info(f"  Target     : {DB_CONFIG['database']}.{table_name}")
+    logger.info(f"  Target     : {cfg['database']}.{table_name}")
     logger.info(f"  Records    : {len(df):,}")
     logger.info(f"  Columns    : {df.shape[1]}")
     logger.info("-" * 60)
@@ -107,9 +137,8 @@ def load_to_mysql(df: pd.DataFrame, table_name: str = "sales_data") -> bool:
     for col in df_mysql.select_dtypes(include=["datetime64"]).columns:
         df_mysql[col] = df_mysql[col].dt.strftime("%Y-%m-%d %H:%M:%S")
 
+    engine = get_engine()
     try:
-        engine = get_engine()
-
         # Step 3: Load data using pandas to_sql (handles schema auto-creation)
         df_mysql.to_sql(
             name=table_name,
@@ -117,7 +146,7 @@ def load_to_mysql(df: pd.DataFrame, table_name: str = "sales_data") -> bool:
             if_exists="replace",
             index=False,
             chunksize=1000,
-            method="multi"
+            method="multi",
         )
 
         # Step 4: Verify the load
@@ -126,7 +155,6 @@ def load_to_mysql(df: pd.DataFrame, table_name: str = "sales_data") -> bool:
             row_count = result.fetchone()[0]
 
         elapsed = (datetime.now() - start_time).total_seconds()
-
         logger.info(f"  ✓ Loaded {row_count:,} records into '{table_name}'")
         logger.info(f"  ✓ Database load completed in {elapsed:.2f}s")
 
@@ -140,63 +168,66 @@ def load_to_mysql(df: pd.DataFrame, table_name: str = "sales_data") -> bool:
                 f"    ├── {col_info['name']:25s} │ {str(col_info['type']):20s}"
             )
 
-        engine.dispose()
         logger.info("=" * 60)
         return True
 
     except Exception as e:
-        logger.error(f"  ✗ Database loading failed: {e}")
+        logger.error(f"  ✗ Database loading failed: {_mask_url(str(e))}")
         return False
+
+    finally:
+        # Guarantee the connection pool is released even if an exception occurs
+        engine.dispose()
 
 
 def add_indexes(table_name: str = "sales_data"):
     """Add performance indexes to the MySQL table for faster querying."""
+    # Columns that benefit from an index; date/id use prefix lengths only
+    # for VARCHAR-typed columns — detected at runtime via inspector.
     index_columns = [
         "order_date", "category", "sub_category", "segment",
-        "region", "state", "city", "ship_mode", "customer_id"
+        "region", "state", "city", "ship_mode", "customer_id",
     ]
 
+    engine = get_engine()
     try:
-        engine = get_engine()
         inspector = inspect(engine)
-        existing_cols = [c["name"] for c in inspector.get_columns(table_name)]
+        existing_cols = {c["name"]: c for c in inspector.get_columns(table_name)}
 
         with engine.connect() as conn:
             for col in index_columns:
-                if col in existing_cols:
-                    idx_name = f"idx_{table_name}_{col}"
-                    try:
-                        conn.execute(text(
-                            f"CREATE INDEX `{idx_name}` ON `{table_name}` (`{col}`(191))"
-                            if col in ["customer_id", "order_date"]
-                            else f"CREATE INDEX `{idx_name}` ON `{table_name}` (`{col}`)"
-                        ))
-                        logger.info(f"    ├── Created index: {idx_name}")
-                    except Exception:
-                        pass  # Index may already exist
+                if col not in existing_cols:
+                    continue
+
+                col_type = str(existing_cols[col]["type"]).upper()
+                idx_name = f"idx_{table_name}_{col}"
+
+                # Only apply prefix length for string types (TEXT / VARCHAR)
+                needs_prefix = any(t in col_type for t in ("TEXT", "VARCHAR", "CHAR"))
+                ddl = (
+                    f"CREATE INDEX `{idx_name}` ON `{table_name}` (`{col}`(191))"
+                    if needs_prefix
+                    else f"CREATE INDEX `{idx_name}` ON `{table_name}` (`{col}`)"
+                )
+
+                try:
+                    conn.execute(text(ddl))
+                    logger.info(f"    ├── Created index: {idx_name}")
+                except Exception:
+                    pass  # Index may already exist
+
             conn.commit()
-        engine.dispose()
         logger.info("  ✓ Performance indexes added")
     except Exception as e:
         logger.warning(f"  ⚠ Could not add indexes: {e}")
-
-
-def execute_query(query: str) -> pd.DataFrame:
-    """Execute a SQL query and return results as a DataFrame."""
-    try:
-        engine = get_engine()
-        df = pd.read_sql(query, engine)
+    finally:
         engine.dispose()
-        return df
-    except Exception as e:
-        logger.error(f"  ✗ Query execution failed: {e}")
-        return pd.DataFrame()
 
 
 def get_table_info(table_name: str = "sales_data") -> dict:
     """Get metadata about the MySQL table."""
+    engine = get_engine()
     try:
-        engine = get_engine()
         with engine.connect() as conn:
             row_count = conn.execute(
                 text(f"SELECT COUNT(*) FROM `{table_name}`")
@@ -204,24 +235,27 @@ def get_table_info(table_name: str = "sales_data") -> dict:
 
         inspector = inspect(engine)
         columns = inspector.get_columns(table_name)
-        engine.dispose()
 
         return {
-            "table_name": table_name,
-            "database": DB_CONFIG["database"],
-            "row_count": row_count,
+            "table_name":   table_name,
+            "database":     _get_db_config()["database"],
+            "row_count":    row_count,
             "column_count": len(columns),
             "columns": [
                 {"name": c["name"], "type": str(c["type"])} for c in columns
             ],
         }
     except Exception as e:
-        logger.error(f"  ✗ Could not retrieve table info: {e}")
+        logger.error(f"  ✗ Could not retrieve table info: {_mask_url(str(e))}")
         return {}
+    finally:
+        engine.dispose()
 
 
 # ── Standalone Execution ──────────────────────────────────────────────────
 if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, os.path.dirname(__file__))
     from ingestion import discover_and_load
     from cleaning import clean_and_transform
 
