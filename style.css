@@ -154,7 +154,7 @@ li,
 .stTabs [data-baseweb="tab"] span,
 .stTabs [data-baseweb="tab"] .stMarkdown,
 .stTabs [data-baseweb="tab"] [data-testid="stMarkdownContainer"] {
-    color: #ffffff !important;
+    color: #000000 !important;
 }
 
 .stTabs [aria-selected="true"] {
